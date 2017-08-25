@@ -216,7 +216,7 @@ class Frame(object):
         self._name = frame_payload['name'] if 'name' in frame_payload else ''
         self._url = frame_payload['url']
         self._loading_failed = not not frame_payload['unreachableUrl'] \
-            if 'unreachableUrl' in frame_payload else None
+            if 'unreachableUrl' in frame_payload else False
 
     def _detach(self):
         for task in self._wait_tasks:
@@ -268,6 +268,15 @@ class FrameManager(EventEmitter):
     def frames():
         return list(self._frames.values())
 
+    def _on_frame_attached(self, frame_id, parent_frame_id):
+        if frame_id in self._frames:
+            return
+        assert parent_frame_id
+        parent_frame = self._frames[parent_frame_id]
+        frame = Frame(self._client, self._mouse, parent_frame, frame_id)
+        self._frames[frame._id] = frame
+        self.emit(FrameManager.Events['FrameAttached'], frame)
+
     def _on_frame_detached(self, frame_id, parent_frame_id):
         if frame_id in self._frames:
             return
@@ -282,8 +291,7 @@ class FrameManager(EventEmitter):
             not frame_payload['parentId']
         frame = self._main_frame if is_main_frame else \
             self._frames.get(frame_payload['id'], None)
-        # print(is_main_frame, frame)
-        # assert is_main_frame or frame
+        assert is_main_frame or frame
 
         if frame:
             for child in frame.child_frames():
@@ -291,7 +299,7 @@ class FrameManager(EventEmitter):
 
         if is_main_frame:
             if frame:
-                self._frames.delete(frame._id, frame)
+                del self._frames[frame._id]
                 frame._id = frame_payload['id']
             else:
                 frame = Frame(
@@ -323,7 +331,9 @@ class FrameManager(EventEmitter):
             self._remove_frames_recursively(child)
         frame._detach()
         del self._frames[frame._id]
-        self.emit(FrameManager['Events']['FrameDetached'], frame)
+        self.emit(FrameManager.Events['FrameDetached'], frame)
 
     def is_main_frame_loading_failed(self):
-        return not not self._main_frame._loading_failed
+        if self._main_frame:
+            return not not self._main_frame._loading_failed
+        return True

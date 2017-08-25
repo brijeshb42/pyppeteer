@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 import subprocess
 import random
@@ -108,7 +109,9 @@ class Launcher(object):
         proc_list = [chrome_process]
 
         def chrome_kill():
+            print('Killing chrome')
             proc_list[0].kill()
+            shutil.rmtree(user_data_dir)
 
         signal.signal(signal.SIGTERM, chrome_kill)
         terminated = False
@@ -116,6 +119,7 @@ class Launcher(object):
         browser_ws_endpoint = await wait_for_ws_endpoint(chrome_process)
         if not browser_ws_endpoint:
             chrome_process.kill()
+            shutil.rmtree(user_data_dir)
             raise Exception('Failed to connect to chrome')
 
         connection_delay = options['sloMo'] if 'sloMo' in options else 0

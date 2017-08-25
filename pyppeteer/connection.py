@@ -1,5 +1,5 @@
-import json
 import asyncio
+import json
 
 import websockets.client as wsclient
 from websockets.exceptions import ConnectionClosed
@@ -12,131 +12,115 @@ class Connection(EventEmitter):
 
     @staticmethod
     async def create(url, delay=0, loop=asyncio_loop):
-        ws = await wsclient.connect(url)
-        connection = Connection(url, ws, loop=loop)
-        return connection
+        future = asyncio.Future()
+        try:
+            ws = await wsclient.connect(url)
+            future.set_result(Connection(url, ws, delay, loop=loop))
+        except Exception as e:
+            future.set_exception(e)
+        return await future
 
-    def __init__(self, url, ws, delay=0, loop=None):
+    def __init__(self, url, ws, delay=0, loop=asyncio_loop):
         super().__init__()
         self._url = url
         self._last_id = 0
         self._callbacks = {}
-        self._loop = loop
         self._delay = delay/1000
-
         self._ws = ws
         self._sessions = {}
+        self._loop = loop
 
-        ws_message_read_task = self._loop.create_task(self._add_listeners())
+        asyncio.async(self._listen_for_msg())
+        # print('Got it')
 
-        def bye(task):
-            pass
-            # print(task)
-            # print('Connection closed')
-        ws_message_read_task.add_done_callback(bye)
-        # loop.run_until_complete(ws_message_read_task)
-
-    async def _add_listeners(self):
+    async def _listen_for_msg(self):
         while True:
             try:
                 message = await self._ws.recv()
-                await self.on_message(message)
             except ConnectionClosed:
-                # print('Exit')
-                await self.on_closed()
+                await self._on_message(message)
                 break
+            if message is None:
+                self._on_closed()
+                break
+            await self._on_message(message)
 
     def url(self):
         return self._url
 
-    def _future_cb(self, future):
-        self
-
     async def send(self, method, params={}):
         self._last_id += 1
         _id = self._last_id
-        message = json.dumps({'id': _id, 'method': method, 'params': params})
-        # print('SEND ► ' + message)
+        message = json.dumps({
+            'id': _id,
+            'method': method,
+            'params': params
+        })
+        # print('SEND ►', message)
         await self._ws.send(message)
-
-        # self._callbacks[_id] = {'method': method}
-        # message = await self._ws.recv()
-        # res = await self.on_message(message)
-        # return res
-        # return asyncio.Task()
         future = asyncio.Future()
-        self._callbacks[_id] = {'method': method, 'resolve': future}
+        self._callbacks[_id] = {
+            'method': method,
+            'resolve': future
+        }
         return await future
 
-    def _resolve_future(self, future, result):
-        # print('Future result - ', future, result)
-        future.set_result(result)
-
-    async def on_message(self, message):
+    async def _on_message(self, message):
         if self._delay:
             await asyncio.sleep(self._delay)
-        print('◀ RECV ' + message)
+        # print('◀ RECV', message)
         data = json.loads(message)
         if 'id' in data and data['id'] and data['id'] in self._callbacks:
             callback = self._callbacks[data['id']]
+            future = callback['resolve']
             del self._callbacks[data['id']]
             if 'error' in data:
-                callback['resolve'].set_exception(
-                    Exception(
-                        'Protocol error ({}): {} {}'.format(
-                            callback['method'],
-                            data['error']['message'],
-                            data['error']['data']
-                        )
-                    )
+                future.set_exception(
+                    Exception('Protocol error: {}'.format(callback['method']))
                 )
-                return callback['resolve']
             else:
-                self._loop.call_soon(
-                    self._resolve_future,
-                    callback['resolve'],
-                    data['result']
-                )
-                return callback['resolve']
+                future.set_result(data['result'])
+            # return future
         else:
-            assert 'id' not in data or not data['id']
-            # print('not id data')
-            if data['method'] == 'Target.receivedMessageFromTarget':
+            if 'id' in data:
+                assert not data['id']
+            method = data['method'] if 'method' in data else ''
+            if method == 'Target.receivedMessageFromTarget':
                 session = self._sessions.get(data['params']['sessionId'], None)
                 if session:
-                    return await session._on_message(data['params']['message'])
-            elif data['method'] == 'Target.detachedFromTarget':
+                    session._on_message(data['params']['message'])
+            elif method == 'Target.detachedFromTarget':
                 session = self._sessions.get(data['params']['sessionId'], None)
                 if session:
-                    session.on_closed()
-                    del self._sessions[data['params']['sessionId']]
+                    session._on_closed()
+                del self._sessions[data['params']['sessionId']]
             else:
-                # print(data)
+                # print('---------Emitting------------{}'.format(data['method']))
                 self.emit(data['method'], data['params'])
-                return None
 
-    async def on_closed(self):
-        # removeAllListeners
-        for callback in self._callbacks.values():
-            callback['resolve'].set_exception(
-                Exception(
-                    'Protocol error ({}): Target closed.'.format(
-                        callback['method']))
+    def _on_closed(self):
+        for key in self._callbacks:
+            cb = self._callbacks[key]
+            future = cb['resolve']
+            future.set_exception(
+                Exception('Protocol error ({}): Target closed.'.format(
+                    cb['method']
+                ))
             )
         self._callbacks.clear()
         for session in self._sessions.values():
-            session.on_closed()
+            session._on_closed()
         self._sessions.clear()
 
-    async def dispose(self):
-        await self.on_closed()
+    def dispose(self):
+        self._on_closed()
         self._ws.close()
 
     async def create_session(self, target_id):
-        data = await self.send(
-            'Target.attachToTarget', {'targetId': target_id})
-        # print('Data', data)
-        session_id = data['sessionId']
+        res = await self.send('Target.attachToTarget', {
+            'targetId': target_id
+        })
+        session_id = res['sessionId']
         session = Session(self, target_id, session_id)
         self._sessions[session_id] = session
         return session
@@ -157,73 +141,72 @@ class Session(EventEmitter):
 
     async def send(self, method, params={}):
         if not self._connection:
-            return asyncio.Future().set_exception(
-                Exception((
-                    'Protocol error ({}): Session closed.'
-                    'Most likely the page has been closed.').format(
-                        method
-                    )
-                )
-            )
+            future = asyncio.Future()
+            future.set_exception(Exception(
+                'Protocol error ({}): Session closed'
+                '. Most likely the page has been closed.'.format(method)
+            ))
+            return await future
         self._last_id += 1
         _id = self._last_id
-        message = json.dumps({'id': _id, 'method': method, 'params': params})
-        # print('Session - SEND ► ' + message)
-        res = await self._connection.send('Target.sendMessageToTarget', {
-            'sessionId': self._session_id,
-            'message': message
+        message = json.dumps({
+            'id': _id,
+            'method': method,
+            'params': params
         })
-        if hasattr(res, 'exception') and res.exception():
+        # print('Debug Session: SEND ► ', message)
+        future = asyncio.Future()
+        self._callbacks[_id] = {
+            'method': method,
+            'resolve': future
+        }
+        try:
+            res = await self._connection.send('Target.sendMessageToTarget', {
+                'sessionId': self._session_id,
+                'message': message
+            })
+        except Exception as e:
             if _id in self._callbacks:
                 callback = self._callbacks[_id]
                 del self._callbacks[_id]
-                callback['resolve'].set_exception(res.exception())
-                return await callback['resolve']
-            else:
-                return await res
-        future = asyncio.Future()
-        self._callbacks[_id] = {'method': method, 'resolve': future}
+                fut = callback['resolve']
+                fut.set_exception(e)
         return await future
 
-    async def _on_message(self, message):
-        # print('◀ RECV ' + message)
+    def _on_message(self, message):
+        # print('Debug Session: ◀ RECV ', message)
         data = json.loads(message)
-        if 'id' in data and data['id'] and data['id'] in self._callbacks:
-            callback = self._callbacks.get(data['id'])
+        if 'id' in data and data['id'] in self._callbacks:
+            # print('id {} in data'.format(data['id']))
+            callback = self._callbacks[data['id']]
+            future = callback['resolve']
             del self._callbacks[data['id']]
             if 'error' in data:
-                callback['resolve'].set_exception(
-                    Exception(
-                        'Protocol error ({}): {} {}'.format(
-                            callback['method'],
-                            data['error']['message'],
-                            data['error']['data']
-                        )
+                future.set_exception(Exception(
+                    'Protocol error ({}): {} {}'.format(
+                        callback['method'],
+                        data['error']['message'],
+                        data['error']['data']
                     )
-                )
-                return callback['resolve']
+                ))
             else:
-                callback['resolve'].set_result(data['result'])
-                return callback['resolve']
+                future.set_result(data['result'])
         else:
-            # assert 'id' in data or not data['id']
             if 'method' in data:
                 self.emit(data['method'], data['params'])
-            return asyncio.Future().set_result({})
 
     async def dispose(self):
-        await self._connection.send(
-            'Target.closeTarget', {'targetId': self._target_id})
+        await self._connection.send('Target.closeTarget', {
+            'targetId': self._target_id
+        })
 
-    def on_closed(self):
+    def _on_closed(self):
         for callback in self._callbacks.values():
             callback['resolve'].set_exception(
                 Exception(
                     'Protocol error ({}): Target closed.'.format(
-                        callback['method']))
+                        callback['method'])
+                )
             )
         self._callbacks.clear()
         self._connection = None
-
-if __name__ == '__main__':
-    Connection.run()

@@ -11,7 +11,7 @@ class NavigatorWatcher(object):
             options={}, loop=asyncio_loop):
         self._client = client
         self._ignore_https_errors = ignore_https_errors
-        self._timeout = 30
+        self._timeout = 3
         self._loop = loop
         if 'timeout' in options and isinstance(options['timeout'], int):
             self._timeout = options['timeout']/1000
@@ -56,7 +56,7 @@ class NavigatorWatcher(object):
 
         watchdog = asyncio.Future()
         self._maximum_timer = watchdog
-        await asyncio.sleep(self._timeout)
+        # await asyncio.sleep(self._timeout)
         self._loop.call_soon(self._watchdog_cb, watchdog)
 
         navigation_futures = [watchdog]
@@ -73,7 +73,7 @@ class NavigatorWatcher(object):
             navigation_futures.append(cert_error)
 
         if self._wait_until == 'load':
-            print('Wait until load')
+            # print('Wait until load')
             load_event_fired = asyncio.Future()
             self._load_event_fired = load_event_fired
             listener = Helper.add_event_listener(
@@ -84,7 +84,7 @@ class NavigatorWatcher(object):
             self._event_listeners.append(listener)
             navigation_futures.append(load_event_fired)
         else:
-            print('Wait until else')
+            # print('Wait until else')
             self._event_listeners.extend((
                 Helper.add_event_listener(
                     self._client,
@@ -115,7 +115,32 @@ class NavigatorWatcher(object):
             network_idle = asyncio.Future()
             self._network_idle_future = network_idle
             navigation_futures.append(network_idle)
-        self._cleanup()
+        try:
+            res = self._add_nav_futures_to_loop(navigation_futures)
+            await res
+        except Exception as e:
+            raise e
+        finally:
+            self._cleanup()
+
+    def _add_nav_futures_to_loop(self, futures):
+        # print('Add nav future list to loop')
+        main_future = asyncio.Future()
+        asyncio.async(
+            self._start_nav_futures_loop(futures, main_future)
+        )
+        return main_future
+
+    async def _start_nav_futures_loop(self, futures, main_future):
+        # print('Started inf loop')
+        while True:
+            for future in futures:
+                if future.done():
+                    if future.exception():
+                        main_future.set_exception(future.exception())
+                    else:
+                        main_future.set_result(future.result())
+                    return main_future
 
     def cancel(self):
         self._cleanup()

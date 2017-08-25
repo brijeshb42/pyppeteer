@@ -1,5 +1,6 @@
 import urllib.parse as urlparse
 import json
+import asyncio
 
 from pyppeteer.helper import Helper
 from pyppeteer.multimap import Multimap
@@ -38,20 +39,21 @@ class Request(object):
         self._interception_id = interception_id
         self._interception_handled = False
         self._response = None
+        self._complete_promise = asyncio.Future()
 
-        async def _complete_promise():
-            response = await self._client.send('Network.getResponseBody', {
-                'requestId': self._request_id
-            })
-            if 'base64Encoded' in response and response['base64Encoded']:
-                import base64
-                return base64.decodebytes(response['body'])
-            return response['body']
-        self._complete_promise = _complete_promise
+        # async def _complete_promise():
+        #     response = await self._client.send('Network.getResponseBody', {
+        #         'requestId': self._request_id
+        #     })
+        #     if 'base64Encoded' in response and response['base64Encoded']:
+        #         import base64
+        #         return base64.decodebytes(response['body'])
+        #     return response['body']
+        # self._complete_promise = _complete_promise
 
         self.url = url
         self.method = payload['method']
-        self.post_data = payload['postData']
+        self.post_data = payload['postData'] if 'postData' in payload else None
         self.headers = payload['headers']
 
     def response(self):
@@ -101,7 +103,11 @@ class Response(object):
 
     async def buffer(self):
         if not self._content_promise:
-            self._content_promise = await self._request._complete_promise()
+            await self._request._complete_promise
+            response = await self._client.send('Network.getResponseBody', {
+                'requestId': self._request._request_id
+            })
+            return response['body']
         return self._content_promise
 
     async def text(self):
@@ -199,10 +205,10 @@ class NetworkManager(EventEmitter):
             self, request, redirect_status, redirect_headers):
         response = Response(
             self._client, request, redirect_status, redirect_headers)
-        request['_response'] = response
+        request._response = response
         try:
-            del self._request_id_to_request[request['_requestId']]
-            del self._interception_id_to_request[request['_interceptionId']]
+            del self._request_id_to_request[request._request_id]
+            del self._interception_id_to_request[request._interception_id]
         except KeyError:
             pass
         self.emit(NetworkManager.Events['Response'], response)
@@ -254,21 +260,21 @@ class NetworkManager(EventEmitter):
             interception['request'])
 
     def _on_response_received(self, event):
-        request = self._request_id_to_request.get(event['requestId'], None)
+        request = self._request_id_to_request.get(event['requestId'], {})
         if not request:
             return
         response = Response(
             self._client, request,
             event['response']['status'],
             event['response']['headers'])
-        request['_reponse'] = response
+        request._response = response
         self.emit(NetworkManager.Events['Response'], response)
 
-    async def _on_loading_finished(self, event):
+    def _on_loading_finished(self, event):
         request = self._request_id_to_request.get(event['requestId'], None)
         if not request:
             return
-        await request._complete_promise()
+        request._complete_promise.set_result(None)
         try:
             del self._request_id_to_request[event['requestId']]
             del self._interception_id_to_request[event['interceptionId']]
@@ -276,11 +282,11 @@ class NetworkManager(EventEmitter):
             pass
         self.emit(NetworkManager.Events['RequestFinished'], request)
 
-    async def _on_loading_failed(self, event):
+    def _on_loading_failed(self, event):
         request = self._request_id_to_request.get(event['requestId'], None)
         if not request:
             return
-        await request._complete_promise()
+        request._complete_promise.set_result(None)
         try:
             del self._request_id_to_request[event['requestId']]
             del self._interception_id_to_request[event['interceptionId']]

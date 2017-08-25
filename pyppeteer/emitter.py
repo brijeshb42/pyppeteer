@@ -9,7 +9,6 @@ class EventEmitter(object):
         self._events[event].append(callback)
 
     def emit(self, event, *args, **kwargs):
-        # print(event, args, kwargs)
         if event not in self._events:
             return
         for callback in self._events[event]:
