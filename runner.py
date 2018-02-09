@@ -1,3 +1,6 @@
+import sys
+import asyncio
+
 import pyppeteer
 from pyppeteer.loop import loop
 
@@ -7,22 +10,33 @@ async def connect(url):
         'headless': False,
         'dumpio': True
     })
-    print(browser)
+    print('Getting browser version')
     version = await browser.version()
-    print(version)
-    print('Getting Page')
+    print('Browser version is', version)
     page = await browser.new_page()
-    print('Got Page')
-    print(page)
-    # await page.set_viewport({'width': 1440, 'height': 900})
+    await page.set_viewport({'width': 1440, 'height': 900})
+    print('Opening url', url)
     await page.goto(url)
-    # await page.setViewport({'width': 1440, 'height': 900})
-    # await asyncio.sleep(5)
+    print('Opened url', url)
+    print('Getting screenshot')
+    print(page.screenshot)
+    res = await page.screenshot({
+        'path': '/Users/brijesh/Desktop/example.png',
+        'fullPage': True
+    })
+    print(res)
+    await asyncio.sleep(20)
     await browser.close()
 
 
-loop.run_until_complete(connect('https://scroll.in'))
-
+try:
+    if len(sys.argv) > 1:
+        url = sys.argv[1]
+    else:
+        url = 'https://helpshift.com'
+    loop.run_until_complete(connect(url))
+except Exception as e:
+    loop.stop()
 
 # from pyppeteer.connection import Connection
 # from pyppeteer.loop import loop
@@ -84,3 +98,26 @@ loop.run_until_complete(connect('https://scroll.in'))
 #         await websocket.send('h1')
 
 # loop.run_until_complete(hello())
+
+# import asyncio
+
+# from pyppeteer.loop import loop
+# from pyppeteer.connection import Connection
+
+
+# async def connect(url):
+#     print(url)
+#     conn = await Connection.create(url)
+#     print('Got connection')
+#     print(conn)
+#     # asyncio.async(send(conn, 'H1'))
+#     # asyncio.async(send(conn, 'H2'))
+#     res = await conn.send('H1')
+#     print(res)
+#     res = await conn.send('H2')
+#     print(res)
+#     res = await conn.create_session('Hello')
+#     print(res)
+#     # await conn.close()
+
+# loop.run_until_complete(connect('wss://echo.websocket.org'))
